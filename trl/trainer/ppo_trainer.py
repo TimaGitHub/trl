@@ -22,6 +22,15 @@ class PPOConfig:
     )
     learning_rate: float = 1.41e-5
     batch_size: int = 16
+    mini_batch_size: int = 4
+    kl_coef: float = 0.1
+    gamma: float = 0.95
+    vf_coef: float = 0.1
+    entropy_coef: float = 0.01
+    clip_range_value: float = 0.2
+    clip_range: float = 0.2
+    normalize_advantage: bool = False
+    max_grad_norm: Optional[float] = 1.0
 
 
 class PPOTrainer:
@@ -107,12 +116,16 @@ class PPOTrainer:
             `torch.LongTensor`: A tensor of shape (`batch_size`, `gen_len`) containing response tokens.
         """
 
+        if type(query_tensor) == torch.Tensor:
+            if query_tensor.ndim == 1:
+                query_tensor = query_tensor.unsqueeze(0)
+
         if type(query_tensor) in (type(list()), type(())):
             pad_token_id = generation_kwargs.get('pad_token_id', self.tokenizer.pad_token_id)
             query_tensor, attention_mask = collate_left_padding(query_tensor, pad_token_id=pad_token_id, device=self.device)
         else:
             if not attention_mask:
-                attention_mask = torch.ones_like(query_tensor, device=self.device) ### Исправить на случай если сам пользователь заполнить паддингом перед подачей в self.generate()
+                attention_mask = torch.ones_like(query_tensor, device=self.device)
 
         ref_attention_mask = attention_mask.clone()
 
@@ -177,15 +190,10 @@ class PPOTrainer:
 
     @staticmethod
     def calculate_log_probs(model: AutoModelForCausalLMWithValueHead,
-                            query: List[torch.Tensor],
+                            query: torch.Tensor,
                             response: torch.Tensor,
-                            pad_token_id: int,
-                            device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
-        # работает с query = [torch.Tensor1, torch.Tensor2, ...]
-        # response = torch.Tensor
-        # настроить обработку, если query - Тензор, а не List
+                            pad_token_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        query, attention_mask = collate_left_padding(query, pad_token_id=pad_token_id, device=device)
         full_response = torch.cat((query, response), dim=-1)
         full_response_attention_mask = (full_response != pad_token_id).long()
         position_ids = full_response_attention_mask.long().cumsum(-1) - 1
@@ -241,60 +249,121 @@ class PPOTrainer:
     def calculate_loss(ratio, clipped_ratio, advantages):
         return -torch.min(ratio * advantages, clipped_ratio * advantages).sum(dim=-1).mean(dim=0)
 
+    @staticmethod
+    def calculate_entropy(log_probs: torch.Tensor) -> torch.Tensor:
+        probs = torch.exp(log_probs)
+        entropy = -torch.sum(probs * log_probs, dim=-1)
+        return entropy.mean()
+
     def step(self,
              query_tensor: torch.Tensor | List[torch.Tensor],
              responses: torch.Tensor | List[torch.Tensor],
              scores: torch.Tensor | List[torch.Tensor],
-             n_steps: int = 3,
-             beta: float = 0.1,
-             gamma: float = 0.95,
-             eps: float = 0.2,
-             value_loss_coef: float = 0.1
+             ppo_epochs: int = 4,
+             ) -> Dict[str, Any]:
 
-        ) -> Dict[str, Any]:
+        assert self.config.batch_size % self.config.mini_batch_size == 0, \
+            f"batch_size ({self.config.batch_size}) must be divisible by mini_batch_size ({self.config.mini_batch_size})"
 
-        # if type(scores) in (type(list()), type(())):
-        #     scores = torch.stack(scores)[:, None]
+        if type(query_tensor) in (type(list()), type(())):
+            query_tensor, query_attention_mask = collate_left_padding(query_tensor,
+                                                                      pad_token_id=self.tokenizer.pad_token_id,
+                                                                      device=self.device)
+        else:
+            if not query_attention_mask:
+                query_attention_mask = torch.ones_like(query_tensor, device=self.device)
+
+        if type(responses) in (type(list()), type(())):
+            responses, response_attention_mask = collate_left_padding(responses,
+                                                                      pad_token_id=self.tokenizer.pad_token_id,
+                                                                      device=self.device)
+        else:
+            if not response_attention_mask:
+                response_attention_mask = torch.ones_like(responses, device=self.device)
+
+        full_response = torch.cat((query_tensor, responses), dim=-1)
+        full_response_attention_mask = (full_response != self.tokenizer.pad_token_id).long()
+        position_ids = full_response_attention_mask.long().cumsum(-1) - 1
+        position_ids.masked_fill_(full_response_attention_mask == 0, 0)
 
         stats = dict()
 
         max_length = responses.shape[-1]
-        query_length = collate_left_padding(query_tensor, pad_token_id=self.tokenizer.pad_token_id, device=self.device)[0].shape[-1]
+        query_length = query_tensor.shape[-1]
         mse_loss = torch.nn.MSELoss()
 
         with torch.no_grad():
-            old_log_probs, old_values = PPOTrainer.calculate_log_probs(self.model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id, device=self.device)
-            log_ref_probs, ref_values = PPOTrainer.calculate_log_probs(self.ref_model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id, device=self.device)
+            old_log_probs, old_values = PPOTrainer.calculate_log_probs(self.model, query_tensor, responses,
+                                                                       pad_token_id=self.tokenizer.pad_token_id)
+            log_ref_probs, ref_values = PPOTrainer.calculate_log_probs(self.ref_model, query_tensor, responses,
+                                                                       pad_token_id=self.tokenizer.pad_token_id)
 
         kl_div = PPOTrainer.calculate_kl_divergence(old_log_probs, log_ref_probs)
-        returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length, max_length=max_length, beta=beta,
-                                                   gamma=gamma)
+        # Добавить обрезку value function self.config.clip_range_value
 
-        # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length,
+                                                              max_length=max_length, beta=self.config.kl_coef,
+                                                              gamma=self.config.gamma)
 
-        for i in range(n_steps):
-            log_probs, values = PPOTrainer.calculate_log_probs(self.model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id, device=self.device)
-            ratio = PPOTrainer.calculate_ratio(log_probs, old_log_probs)
-            clipped_ratio = PPOTrainer.clip_ratio(ratio, eps=eps)
-            clipped_surrogate_objective_function = PPOTrainer.calculate_loss(ratio, clipped_ratio, advantages)
-            value_loss = mse_loss(values[:, query_length - 1: -1, :].squeeze(-1), returns)
-            total_loss = clipped_surrogate_objective_function + value_loss_coef * value_loss
-            self.optimizer.zero_grad()
-            total_loss.backward()
-            self.optimizer.step()
+        if self.config.normalize_advantage:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        stats['kl_div'] = kl_div.detach().cpu().mean()
-        stats['log_probs'] = log_probs.detach().cpu()
+        running_stats = {
+            'surrogate_objective_function': [],
+            'value_loss': [],
+            'entropy': [],
+            'total_loss': []
+        }
+
+        for ppo_epoch in range(ppo_epochs):
+
+            query_split = torch.split(query_tensor, self.config.mini_batch_size)
+            responses_split = torch.split(responses, self.config.mini_batch_size)
+            old_log_probs_split = torch.split(old_log_probs, self.config.mini_batch_size)
+            advantages_split = torch.split(advantages, self.config.mini_batch_size)
+            returns_split = torch.split(returns, self.config.mini_batch_size)
+
+            for query_mini, response_mini, old_log_probs_mini, adv_mini, ret_mini in zip(
+                    query_split, responses_split, old_log_probs_split, advantages_split, returns_split
+            ):
+
+                log_probs, values = PPOTrainer.calculate_log_probs(self.model, query_mini, response_mini,
+                                                                   pad_token_id=self.tokenizer.pad_token_id)
+                ratio = PPOTrainer.calculate_ratio(log_probs, old_log_probs_mini)
+                clipped_ratio = PPOTrainer.clip_ratio(ratio, eps=self.config.clip_range)
+                clipped_surrogate_objective_function = PPOTrainer.calculate_loss(ratio, clipped_ratio, adv_mini)
+                value_loss = mse_loss(values[:, query_length - 1: -1, :].squeeze(-1), ret_mini)
+                entropy = PPOTrainer.calculate_entropy(log_probs)
+
+                total_loss = clipped_surrogate_objective_function \
+                             + self.config.vf_coef * value_loss \
+                             - self.config.entropy_coef * entropy
+
+                self.optimizer.zero_grad()
+                total_loss.backward()
+                if self.config.max_grad_norm != -1 or (self.config.max_grad_norm is not None):
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                self.optimizer.step()
+
+                running_stats['surrogate_objective_function'].append(
+                    clipped_surrogate_objective_function.detach().cpu().item())
+                running_stats['value_loss'].append(value_loss.detach().cpu().item())
+                running_stats['entropy'].append(entropy.detach().cpu().item())
+                running_stats['total_loss'].append(total_loss.detach().cpu().item())
+
+        stats['kl_div'] = kl_div.detach().cpu().mean().item()
         stats['old_log_probs'] = old_log_probs.detach().cpu()
         stats['old_values'] = old_values.detach().cpu()
-        stats['old_log_probs'] = old_log_probs.detach().cpu()
         stats['mean_scores'] = torch.stack(scores).mean().detach().cpu().item()
         stats['std_scores'] = torch.stack(scores).std().detach().cpu().item()
         stats['returns'] = returns.detach().cpu()
         stats['advantages'] = advantages.detach().cpu()
-        stats['surrogate_objective_function'] = clipped_surrogate_objective_function.cpu().item()
-        stats['value_loss'] = value_loss.detach().cpu().item()
-        stats['total_loss'] = total_loss.detach().cpu().item()
+
+        stats['surrogate_objective_function'] = sum(running_stats['surrogate_objective_function']) / len(
+            running_stats['surrogate_objective_function'])
+        stats['value_loss'] = sum(running_stats['value_loss']) / len(running_stats['value_loss'])
+        stats['entropy'] = sum(running_stats['entropy']) / len(running_stats['entropy'])
+        stats['total_loss'] = sum(running_stats['total_loss']) / len(running_stats['total_loss'])
 
         return stats
 

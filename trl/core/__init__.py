@@ -1,1 +1,1 @@
-from trl.core.utils import LengthSampler, AutoModelForCausalLMWithValueHead
+from .utils import LengthSampler, AutoModelForCausalLMWithValueHead
