@@ -109,10 +109,10 @@ class PPOTrainer:
 
         if type(query_tensor) in (type(list()), type(())):
             pad_token_id = generation_kwargs.get('pad_token_id', self.tokenizer.pad_token_id)
-            query_tensor, attention_mask = collate_left_padding(query_tensor, pad_token_id=pad_token_id)
+            query_tensor, attention_mask = collate_left_padding(query_tensor, pad_token_id=pad_token_id, device=self.device)
         else:
             if not attention_mask:
-                attention_mask = torch.ones_like(query_tensor) ### Исправить на случай если сам пользователь заполнить паддингом перед подачей в self.generate()
+                attention_mask = torch.ones_like(query_tensor, device=self.device) ### Исправить на случай если сам пользователь заполнить паддингом перед подачей в self.generate()
 
         ref_attention_mask = attention_mask.clone()
 

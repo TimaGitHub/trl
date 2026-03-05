@@ -54,12 +54,12 @@ def collate_batch(batch: List[torch.Tensor], pad_token_id: int):
 
 
 # GEMINI GENERATED
-def collate_left_padding(batch: List[torch.Tensor], pad_token_id: int):
+def collate_left_padding(batch: List[torch.Tensor], pad_token_id: int, device: torch.device):
     max_len = max(len(x) for x in batch)
     batch_size = len(batch)
 
     # 1. Создаем тензор, сразу заполненный pad_token_id
-    input_ids = torch.full((batch_size, max_len), pad_token_id, dtype=torch.long)
+    input_ids = torch.full((batch_size, max_len), pad_token_id, dtype=torch.long, device=device)
 
     # 2. Заполняем "хвосты" строк нашими данными
     for i, seq in enumerate(batch):
