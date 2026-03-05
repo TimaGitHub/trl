@@ -10,7 +10,7 @@ from typing import Optional, Callable, List, Union, Tuple, Dict, Any
 
 from trl.core import AutoModelForCausalLMWithValueHead
 
-from utils import filter_logits, collate_batch, collate_left_padding
+from .utils import filter_logits, collate_batch, collate_left_padding
 
 import torch.nn.functional as F
 
