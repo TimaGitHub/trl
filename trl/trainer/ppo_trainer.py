@@ -184,7 +184,7 @@ class PPOTrainer:
         # response = torch.Tensor
         # настроить обработку, если query - Тензор, а не List
 
-        query, attention_mask = collate_left_padding(query, pad_token_id=pad_token_id)
+        query, attention_mask = collate_left_padding(query, pad_token_id=pad_token_id, device=self.device)
         full_response = torch.cat((query, response), dim=-1)
         full_response_attention_mask = (full_response != pad_token_id).long()
         position_ids = full_response_attention_mask.long().cumsum(-1) - 1
