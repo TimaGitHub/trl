@@ -1,18 +1,14 @@
+import wandb
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 import transformers
-
 from dataclasses import dataclass, field
-
-from transformers import AutoTokenizer
-
 from typing import Optional, Callable, List, Union, Tuple, Dict, Any
 
+from transformers import AutoTokenizer
 from trl.core import AutoModelForCausalLMWithValueHead
 
-from .utils import filter_logits, collate_batch, collate_left_padding
-
-import torch.nn.functional as F
+from .utils import filter_logits, collate_left_padding
 
 @dataclass
 class PPOConfig:
@@ -31,7 +27,8 @@ class PPOConfig:
     clip_range: float = 0.2
     normalize_advantage: bool = False
     max_grad_norm: Optional[float] = 1.0
-
+    use_wandb: bool = False
+    wandb_project: str = "custom-trl-project"
 
 class PPOTrainer:
 
@@ -77,9 +74,9 @@ class PPOTrainer:
         self.ref_model = ref_model or AutoModelForCausalLMWithValueHead.from_pretrained(self.config.model_name)
         self.ref_model = self.ref_model.to(self.device)
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(self.config.model_name, max_length=1024)
-        self.dataset = dataset # !!!Продумать если не дадут dataset!!!
+        self.dataset = dataset # !!! Продумать если не дадут dataset!!!
         self.optimizer = optimizer or torch.optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
-        self.data_collator = data_collator # !!!Продумать если не дадут dataset!!!
+        self.data_collator = data_collator # !!! Продумать если не дадут dataset!!!
 
         if self.dataset:
             self.dataloader = self.load_data(self.dataset, self.config.batch_size,
@@ -88,6 +85,13 @@ class PPOTrainer:
             self.dataloader = None
 
         self.states = dict()
+
+        if self.config.use_wandb:
+            wandb.init(
+                project=self.config.wandb_project,
+                config=vars(self.config),  # Логируем гиперпараметры
+                name=f"ppo-{self.config.model_name}"
+            )
 
     def generate(self,
                  query_tensor: Union[torch.Tensor, List[torch.Tensor]],
@@ -269,17 +273,17 @@ class PPOTrainer:
             query_tensor, query_attention_mask = collate_left_padding(query_tensor,
                                                                       pad_token_id=self.tokenizer.pad_token_id,
                                                                       device=self.device)
-        else:
-            if not query_attention_mask:
-                query_attention_mask = torch.ones_like(query_tensor, device=self.device)
+        # else:
+        #     if not query_attention_mask:
+        #         query_attention_mask = torch.ones_like(query_tensor, device=self.device)
 
         if type(responses) in (type(list()), type(())):
             responses, response_attention_mask = collate_left_padding(responses,
                                                                       pad_token_id=self.tokenizer.pad_token_id,
                                                                       device=self.device)
-        else:
-            if not response_attention_mask:
-                response_attention_mask = torch.ones_like(responses, device=self.device)
+        # else:
+        #     if not response_attention_mask:
+        #         response_attention_mask = torch.ones_like(responses, device=self.device)
 
         full_response = torch.cat((query_tensor, responses), dim=-1)
         full_response_attention_mask = (full_response != self.tokenizer.pad_token_id).long()
@@ -364,6 +368,32 @@ class PPOTrainer:
         stats['value_loss'] = sum(running_stats['value_loss']) / len(running_stats['value_loss'])
         stats['entropy'] = sum(running_stats['entropy']) / len(running_stats['entropy'])
         stats['total_loss'] = sum(running_stats['total_loss']) / len(running_stats['total_loss'])
+
+        # GEMINI GENERATED
+        if getattr(self.config, 'use_wandb', False) and wandb.run is not None:
+            wandb_stats = {
+                "objective/kl": stats['kl_div'],
+                "env/reward_mean": stats['mean_scores'],
+                "env/reward_std": stats['std_scores'],
+                "ppo/loss/policy": stats['surrogate_objective_function'],
+                "ppo/loss/value": stats['value_loss'],
+                "ppo/loss/entropy": stats['entropy'],
+                "ppo/loss/total": stats['total_loss'],
+            }
+
+            table = wandb.Table(columns=["query", "response", "reward"])
+
+            queries_text = self.tokenizer.batch_decode(query_tensor, skip_special_tokens=True)
+            responses_text = self.tokenizer.batch_decode(responses, skip_special_tokens=True)
+
+            for q, r, s in zip(queries_text, responses_text, scores):
+                score_val = s.item() if isinstance(s, torch.Tensor) else s
+                table.add_data(q, r, score_val)
+
+            wandb_stats["game_log"] = table
+
+            wandb.log(wandb_stats)
+
 
         return stats
 
