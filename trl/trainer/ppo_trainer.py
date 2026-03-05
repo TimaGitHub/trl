@@ -179,12 +179,13 @@ class PPOTrainer:
     def calculate_log_probs(model: AutoModelForCausalLMWithValueHead,
                             query: List[torch.Tensor],
                             response: torch.Tensor,
-                            pad_token_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
+                            pad_token_id: int,
+                            device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
         # работает с query = [torch.Tensor1, torch.Tensor2, ...]
         # response = torch.Tensor
         # настроить обработку, если query - Тензор, а не List
 
-        query, attention_mask = collate_left_padding(query, pad_token_id=pad_token_id, device=self.device)
+        query, attention_mask = collate_left_padding(query, pad_token_id=pad_token_id, device=device)
         full_response = torch.cat((query, response), dim=-1)
         full_response_attention_mask = (full_response != pad_token_id).long()
         position_ids = full_response_attention_mask.long().cumsum(-1) - 1
@@ -258,12 +259,12 @@ class PPOTrainer:
         stats = dict()
 
         max_length = responses.shape[-1]
-        query_length = collate_left_padding(query_tensor, pad_token_id=self.tokenizer.pad_token_id)[0].shape[-1]
+        query_length = collate_left_padding(query_tensor, pad_token_id=self.tokenizer.pad_token_id, device=self.device)[0].shape[-1]
         mse_loss = torch.nn.MSELoss()
 
         with torch.no_grad():
-            old_log_probs, old_values = PPOTrainer.calculate_log_probs(self.model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id)
-            log_ref_probs, ref_values = PPOTrainer.calculate_log_probs(self.ref_model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id)
+            old_log_probs, old_values = PPOTrainer.calculate_log_probs(self.model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id, device=self.device)
+            log_ref_probs, ref_values = PPOTrainer.calculate_log_probs(self.ref_model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id, device=self.device)
 
         kl_div = PPOTrainer.calculate_kl_divergence(old_log_probs, log_ref_probs)
         returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length, max_length=max_length, beta=beta,
@@ -272,7 +273,7 @@ class PPOTrainer:
         # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         for i in range(n_steps):
-            log_probs, values = PPOTrainer.calculate_log_probs(self.model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id)
+            log_probs, values = PPOTrainer.calculate_log_probs(self.model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id, device=self.device)
             ratio = PPOTrainer.calculate_ratio(log_probs, old_log_probs)
             clipped_ratio = PPOTrainer.clip_ratio(ratio, eps=eps)
             clipped_surrogate_objective_function = PPOTrainer.calculate_loss(ratio, clipped_ratio, advantages)
