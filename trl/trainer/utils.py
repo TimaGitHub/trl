@@ -1,8 +1,11 @@
 import torch
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
+
+from typing import Optional, Callable, List, Union, Tuple, Dict, Any
 
 # GEMINI GENERATED
-def filter_logits(logits, top_k: int = 0, top_p: float = 1.0):
+def filter_logits(logits: torch.Tensor, top_k: int = 0, top_p: float = 1.0):
     """
     Фильтрация логитов с использованием стратегий Top-K и Nucleus (Top-P) sampling.
     """
@@ -37,3 +40,32 @@ def filter_logits(logits, top_k: int = 0, top_p: float = 1.0):
         logits[indices_to_remove] = float('-inf')
 
     return logits
+
+
+# GEMINI GENERATED
+def collate_batch(batch: List[torch.Tensor], pad_token_id: int):
+    # Паддинг: превращаем список в тензор [batch_size, max_len]
+    input_ids = pad_sequence(batch, batch_first=True, padding_value=pad_token_id)
+
+    # Маска: 1 там, где есть данные, и 0 там, где pad_token_id
+    attention_mask = (input_ids != pad_token_id).long()
+
+    return input_ids, attention_mask
+
+
+# GEMINI GENERATED
+def collate_left_padding(batch: List[torch.Tensor], pad_token_id: int):
+    max_len = max(len(x) for x in batch)
+    batch_size = len(batch)
+
+    # 1. Создаем тензор, сразу заполненный pad_token_id
+    input_ids = torch.full((batch_size, max_len), pad_token_id, dtype=torch.long)
+
+    # 2. Заполняем "хвосты" строк нашими данными
+    for i, seq in enumerate(batch):
+        input_ids[i, -len(seq):] = seq
+
+    # 3. Маска создается так же
+    attention_mask = (input_ids != pad_token_id).long()
+
+    return input_ids, attention_mask

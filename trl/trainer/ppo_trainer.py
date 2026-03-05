@@ -8,10 +8,11 @@ from transformers import AutoTokenizer
 
 from typing import Optional, Callable, List, Union, Tuple, Dict, Any
 
-from ... import AutoModelForCausalLMWithValueHead
+from trl.core import AutoModelForCausalLMWithValueHead
 
-from utils import filter_logits
+from utils import filter_logits, collate_batch, collate_left_padding
 
+import torch.nn.functional as F
 
 @dataclass
 class PPOConfig:
@@ -39,11 +40,11 @@ class PPOTrainer:
 
     def __init__(self,
                  config: Optional[PPOConfig] = None,
-                 model = None,
-                 ref_model = None,
+                 model: AutoModelForCausalLMWithValueHead  = None,
+                 ref_model: AutoModelForCausalLMWithValueHead = None,
                  tokenizer: Optional[transformers.tokenization_utils_base.PreTrainedTokenizerBase] = None,
                  dataset: Optional[torch.utils.data.dataset.Dataset] = None,
-                 optimizer: Optional[torch.optim.optimizer.Optimizer] = None,
+                 optimizer: Optional[torch.optim.Optimizer] = None,
                  data_collator: Optional[Callable] = None,
     ):# Дополнить аннотацию
         """
@@ -84,6 +85,7 @@ class PPOTrainer:
                  length_sampler: Optional[int] = 10,
                  return_prompt: bool = False,
                  generate_ref_response: bool = False,
+                 attention_mask: torch.Tensor = None,
                  **generation_kwargs
                  ) -> torch.Tensor | Tuple[torch.Tensor] | Tuple[torch.Tensor, ...] | List[torch.Tensor]:
         """
@@ -105,8 +107,16 @@ class PPOTrainer:
             `torch.LongTensor`: A tensor of shape (`batch_size`, `gen_len`) containing response tokens.
         """
 
+        if type(query_tensor) in (type(list()), type(())):
+            pad_token_id = generation_kwargs.get('pad_token_id', self.tokenizer.pad_token_id)
+            query_tensor, attention_mask = collate_left_padding(query_tensor, pad_token_id=pad_token_id)
+        else:
+            if not attention_mask:
+                attention_mask = torch.ones_like(query_tensor) ### Исправить на случай если сам пользователь заполнить паддингом перед подачей в self.generate()
+
+        ref_attention_mask = attention_mask.clone()
+
         generated = query_tensor
-        values_list = []
 
         top_k = generation_kwargs.get('top_k', 0)
         top_p = generation_kwargs.get('top_p', 1.0)
@@ -114,11 +124,15 @@ class PPOTrainer:
         pad_token = self.tokenizer.pad_token_id
 
         for token in range(length_sampler):
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 0)
+
             with torch.no_grad():
-                outputs, values = self.model(generated)
+                outputs, __values = self.model(input_ids=generated,
+                                               attention_mask=attention_mask,
+                                               position_ids=position_ids)
                 next_token_logits = outputs.logits[:, -1, :]
 
-            values_list.append(values)
             next_token_logits = next_token_logits / temperature
             filtered_logits = filter_logits(next_token_logits, top_k=top_k, top_p=top_p)
             probs = torch.softmax(filtered_logits, dim=-1)
@@ -126,11 +140,19 @@ class PPOTrainer:
             new_next_token = pad_token * (generated[:, -1:] == pad_token) +  next_token * (generated[:, -1:] != pad_token)
             generated = torch.cat((generated, new_next_token), dim=1)
 
+            new_mask_token = (new_next_token != pad_token).long()
+            attention_mask = torch.cat((attention_mask, new_mask_token), dim=1)
+
         if generate_ref_response:
             ref_generated = query_tensor
             for token in range(length_sampler):
+                ref_position_ids = ref_attention_mask.long().cumsum(-1) - 1
+                ref_position_ids.masked_fill_(ref_attention_mask == 0, 0)
+
                 with torch.no_grad():
-                    ref_outputs, _ = self.ref_model(ref_generated)
+                    ref_outputs, __values = self.ref_model(input_ids=ref_generated,
+                                                           attention_mask=ref_attention_mask,
+                                                           position_ids=ref_position_ids)
                     next_ref_token_logits = ref_outputs.logits[:, -1, :]
 
                 next_ref_token_logits = next_ref_token_logits / temperature
@@ -140,27 +162,138 @@ class PPOTrainer:
                 new_next_ref_token = pad_token * (ref_generated[:, -1:] == pad_token) + next_ref_token * (ref_generated[:, -1:] != pad_token)
                 ref_generated = torch.cat((ref_generated, new_next_ref_token), dim=1)
 
+                new_mask_ref_token = (new_next_ref_token != pad_token).long()
+                ref_attention_mask = torch.cat((ref_attention_mask, new_mask_ref_token), dim=1)
 
             if return_prompt:
-                return generated.long(), values_list, ref_generated.long()
+                return generated.long(), ref_generated.long()
             else:
-                return generated[:, query_tensor.shape[1]:].long(), values_list, ref_generated[:, query_tensor.shape[1]:].long()
+                return generated[:, query_tensor.shape[1]:].long(), ref_generated[:, query_tensor.shape[1]:].long()
         else:
             if return_prompt:
-                return generated.long(), values_list
+                return generated.long()
             else:
-                return generated[:, query_tensor.shape[1]:].long(), values_list
+                return generated[:, query_tensor.shape[1]:].long()
+
+    @staticmethod
+    def calculate_log_probs(model: AutoModelForCausalLMWithValueHead,
+                            query: List[torch.Tensor],
+                            response: torch.Tensor,
+                            pad_token_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        # работает с query = [torch.Tensor1, torch.Tensor2, ...]
+        # response = torch.Tensor
+        # настроить обработку, если query - Тензор, а не List
+
+        query, attention_mask = collate_left_padding(query, pad_token_id=pad_token_id)
+        full_response = torch.cat((query, response), dim=-1)
+        full_response_attention_mask = (full_response != pad_token_id).long()
+        position_ids = full_response_attention_mask.long().cumsum(-1) - 1
+        position_ids.masked_fill_(full_response_attention_mask == 0, 0)
+
+        outputs, values = model(input_ids=full_response,
+                                attention_mask=full_response_attention_mask,
+                                position_ids=position_ids)
+        shift_logits = outputs.logits[:, query.shape[-1] - 1: -1, :].contiguous()
+        shift_log_probs = F.log_softmax(shift_logits, dim=-1)
+        token_log_probs = torch.gather(shift_log_probs, dim=2, index=response[:, :, None]).squeeze(-1)
+
+        return token_log_probs, values
+
+    @staticmethod
+    def calculate_kl_divergence(log_probs_1: torch.Tensor,
+                                log_probs_2: torch.Tensor) -> torch.Tensor:
+        return log_probs_1 - log_probs_2
+
+    @staticmethod
+    def calculate_ratio(log_probs_1: torch.Tensor,
+                        log_probs_2: torch.Tensor) -> torch.Tensor:
+        return torch.exp(log_probs_1 - log_probs_2)
+
+    @staticmethod
+    def clip_ratio(ratio: torch.Tensor,
+                   eps: float =0.2) -> torch.Tensor:
+        return torch.clamp(ratio, 1 - eps, 1 + eps)
+
+    @staticmethod
+    def calculate_advantages(rewards: List[torch.Tensor],
+                             values: torch.Tensor,
+                             kl_div: torch.Tensor,
+                             query_length: int,
+                             max_length: int,
+                             beta: float = 0.1,
+                             gamma: float = 0.95) -> Tuple[torch.Tensor, torch.Tensor]:
+        returns = []  # Накопленный доход
+        last_token_reward = torch.Tensor(rewards, device=kl_div.device) - beta * kl_div[:, -1]
+        returns.append(last_token_reward)
+
+        for i in range(1, max_length):
+            current_kl = kl_div[:, -1 - i]
+            current_return = - beta * current_kl + gamma * returns[-1]
+            returns.append(current_return)
+
+        returns = returns[::-1]
+        returns_tensor = torch.stack(returns, dim=1)
+        advantages = returns_tensor - values[:, query_length - 1: -1, :].squeeze(-1)
+        return returns_tensor, advantages
+
+    @staticmethod
+    def calculate_loss(ratio, clipped_ratio, advantages):
+        return -torch.min(ratio * advantages, clipped_ratio * advantages).sum(dim=-1).mean(dim=0)
 
     def step(self,
              query_tensor: torch.Tensor | List[torch.Tensor],
              responses: torch.Tensor | List[torch.Tensor],
              scores: torch.Tensor | List[torch.Tensor],
-             response_masks: Optional[List[torch.LongTensor]] = None) -> Dict[str, Any]:
-        if type(scores) == type(list):
-            scores = torch.stack(scores)[:, None]
+             n_steps: int = 3,
+             beta: float = 0.1,
+             gamma: float = 0.95,
+             eps: float = 0.2,
+             value_loss_coef: float = 0.1
 
+        ) -> Dict[str, Any]:
 
-        if type(query_tensor) == type(list):
-            for index, (query, response, score) in reversed(list(enumerate(zip(query_tensor, responses, scores)))):
+        # if type(scores) in (type(list()), type(())):
+        #     scores = torch.stack(scores)[:, None]
 
+        stats = dict()
+
+        max_length = responses.shape[-1]
+        query_length = collate_left_padding(query_tensor, pad_token_id=self.tokenizer.pad_token_id)[0].shape[-1]
+        mse_loss = torch.nn.MSELoss()
+
+        with torch.no_grad():
+            old_log_probs, old_values = PPOTrainer.calculate_log_probs(self.model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id)
+            log_ref_probs, ref_values = PPOTrainer.calculate_log_probs(self.ref_model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id)
+
+        kl_div = PPOTrainer.calculate_kl_divergence(old_log_probs, log_ref_probs)
+        returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length, max_length=max_length, beta=beta,
+                                                   gamma=gamma)
+
+        # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        for i in range(n_steps):
+            log_probs, values = PPOTrainer.calculate_log_probs(self.model, query_tensor, responses, pad_token_id=self.tokenizer.pad_token_id)
+            ratio = PPOTrainer.calculate_ratio(log_probs, old_log_probs)
+            clipped_ratio = PPOTrainer.clip_ratio(ratio, eps=eps)
+            clipped_surrogate_objective_function = PPOTrainer.calculate_loss(ratio, clipped_ratio, advantages)
+            value_loss = mse_loss(values[:, query_length - 1: -1, :].squeeze(-1), returns)
+            total_loss = clipped_surrogate_objective_function + value_loss_coef * value_loss
+            self.optimizer.zero_grad()
+            total_loss.backward()
+            self.optimizer.step()
+
+        stats['kl_div'] = kl_div.detach().cpu().mean()
+        stats['log_probs'] = log_probs.detach().cpu()
+        stats['old_log_probs'] = old_log_probs.detach().cpu()
+        stats['old_values'] = old_values.detach().cpu()
+        stats['old_log_probs'] = old_log_probs.detach().cpu()
+        stats['mean_scores'] = torch.stack(scores).mean().detach().cpu().item()
+        stats['std_scores'] = torch.stack(scores).std().detach().cpu().item()
+        stats['returns'] = returns.detach().cpu()
+        stats['advantages'] = advantages.detach().cpu()
+        stats['surrogate_objective_function'] = clipped_surrogate_objective_function.cpu().item()
+        stats['value_loss'] = value_loss.detach().cpu().item()
+        stats['total_loss'] = total_loss.detach().cpu().item()
+
+        return stats
 
