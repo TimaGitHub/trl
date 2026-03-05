@@ -224,7 +224,7 @@ class PPOTrainer:
                              beta: float = 0.1,
                              gamma: float = 0.95) -> Tuple[torch.Tensor, torch.Tensor]:
         returns = []  # Накопленный доход
-        last_token_reward = torch.Tensor(rewards) - beta * kl_div[:, -1]
+        last_token_reward = torch.Tensor(rewards).to(kl_div.device) - beta * kl_div[:, -1]
         returns.append(last_token_reward)
 
         for i in range(1, max_length):
