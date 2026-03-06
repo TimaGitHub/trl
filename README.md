@@ -1,3 +1,7 @@
+# TRL - Transformer Reinforcement Learning
+
+![img.png](img.png)
+
 # 🌌 Custom TRL: Elegance and Power in Reinforcement Learning
 
 Welcome to a project where fundamental mathematics meets cutting-edge artificial intelligence. This library is not just a custom analogue of the popular Hugging Face solution; it is a deeply reimagined, elegant, and crystal-clear architecture for fine-tuning Large Language Models (LLMs) using the **PPO (Proximal Policy Optimization)** algorithm.
