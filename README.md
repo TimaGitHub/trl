@@ -1,6 +1,6 @@
 # TRL - Transformer Reinforcement Learning
 
-![img.png](img.png)
+![Image](https://github.com/user-attachments/assets/3812473c-7c5b-4f59-b849-b9b77592d3c4)
 
 # 🌌 Custom TRL: Elegance and Power in Reinforcement Learning
 
