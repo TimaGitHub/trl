@@ -379,6 +379,12 @@ class PPOTrainer:
                                                                               gamma=self.config.gamma,
                                                                               lambda_coef=self.config.lambda_coef)
 
+            # CHECK IF IT WORKS (lambda_coef == 1  in GAE makes the advantage estimation equivalent to the Monte Carlo (MC) return)
+            # returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length,
+            #                                                       max_length=max_length, beta=1,
+            #                                                       gamma=self.config.gamma)
+
+
         if self.config.normalize_advantage:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
