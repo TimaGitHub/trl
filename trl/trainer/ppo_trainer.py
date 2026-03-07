@@ -288,7 +288,7 @@ class PPOTrainer:
 
     @staticmethod
     def calculate_loss(ratio, clipped_ratio, advantages):
-        return -torch.min(ratio * advantages, clipped_ratio * advantages).mean(dim=0)
+        return -torch.min(ratio * advantages, clipped_ratio * advantages).mean()
 
     @staticmethod
     def calculate_entropy(log_probs: torch.Tensor) -> torch.Tensor:
