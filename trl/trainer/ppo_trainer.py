@@ -19,6 +19,7 @@ class PPOConfig:
     learning_rate: float = 1.41e-5
     batch_size: int = 16
     mini_batch_size: int = 4
+    ppo_epochs: int = 4
     kl_coef: float = 0.1
     gamma: float = 0.95
     vf_coef: float = 0.1
@@ -27,6 +28,7 @@ class PPOConfig:
     clip_range: float = 0.2
     normalize_advantage: bool = False
     max_grad_norm: Optional[float] = 1.0
+    lambda_coef: float = 0.95
     use_wandb: bool = False
     wandb_project: str = "custom-trl-project"
 
@@ -105,19 +107,15 @@ class PPOTrainer:
         Generate response with the model given the query tensor.
         call the `generate` method of the model.
         Args:
-        query_tensor (`torch.LongTensor`):
-            A tensor of shape (`seq_len`) containing query tokens or a list of tensors of shape (`seq_len`).
-        length_sampler (`Callable`, *optional*):
-            Callable that returns the number of newly generated tokens.
-        return_prompt (`bool`, *optional*):
-            If set to `False` the prompt is not returned but only the newly generated tokens, defaults to `True`.
-        generate_ref_response (`bool`, *optional*):
-            If set to `True` the reference response is also generated, defaults to `False`.
-        generation_kwargs (dict[str, Any]):
-            Keyword arguments for generation.
+            query_tensor - A tensor of shape (`seq_len`) containing query tokens or a list of tensors of shape (`seq_len`).
+            length_sampler - Callable that returns the number of newly generated tokens.
+            return_prompt - If set to `False` the prompt is not returned but only the newly generated tokens, defaults to `True`.
+            generate_ref_response - If set to `True` the reference response is also generated, defaults to `False`.
+            attention_mask -  Tensors containing masks of the response tokens.
+            generation_kwargs - Keyword arguments for generation.
 
         Returns:
-            `torch.LongTensor`: A tensor of shape (`batch_size`, `gen_len`) containing response tokens.
+            A tensor of shape containing response tokens.
         """
 
         if type(query_tensor) == torch.Tensor:
@@ -224,7 +222,7 @@ class PPOTrainer:
 
     @staticmethod
     def clip_ratio(ratio: torch.Tensor,
-                   eps: float =0.2) -> torch.Tensor:
+                   eps: float = 0.2) -> torch.Tensor:
         return torch.clamp(ratio, 1 - eps, 1 + eps)
 
     @staticmethod
@@ -250,6 +248,39 @@ class PPOTrainer:
         return returns_tensor, advantages
 
     @staticmethod
+    def calculate_generalized_advantages(rewards: List[torch.Tensor],
+                                         values: torch.Tensor,
+                                         kl_div: torch.Tensor,
+                                         query_length: int,
+                                         beta: float = 0.1,
+                                         gamma: float = 0.95,
+                                         lambda_coef: float = 0.95
+                                         ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        batch_size, seq_len = kl_div.shape
+        rewards_tensor = torch.stack(rewards).to(dtype=torch.float32, device=kl_div.device)[:, None]
+
+        advantages = torch.zeros_like(kl_div)
+        last_gae_lam = 0.0
+
+        for t in reversed(range(seq_len)):
+            if t == seq_len - 1:
+                next_values = 0.0
+                step_reward = rewards_tensor - beta * kl_div[:, t:t + 1]
+            else:
+                next_values = values[:, t + 1]
+                step_reward = -beta * kl_div[:, t:t + 1]
+
+            delta = step_reward + gamma * next_values - values[:, t]
+
+            last_gae_lam = delta + gamma * lambda_coef * last_gae_lam
+            advantages[:, t] = last_gae_lam.squeeze(-1)
+
+        returns = advantages + values[:, query_length:, 0]
+
+        return returns, advantages
+
+    @staticmethod
     def calculate_loss(ratio, clipped_ratio, advantages):
         return -torch.min(ratio * advantages, clipped_ratio * advantages).sum(dim=-1).mean(dim=0)
 
@@ -263,8 +294,17 @@ class PPOTrainer:
              query_tensor: torch.Tensor | List[torch.Tensor],
              responses: torch.Tensor | List[torch.Tensor],
              scores: torch.Tensor | List[torch.Tensor],
-             ppo_epochs: int = 4,
              ) -> Dict[str, Any]:
+        """
+        Run a PPO optimisation step given a list of queries, model responses, and rewards.
+
+        Args:
+            query_tensor - List of tensors containing the encoded queries of shape (`query_length`)
+            responses - List of tensors containing the encoded responses of shape (`response_length`)
+            scores - List of tensors containing the scores.
+        Returns:
+            A summary of the training statistics
+        """
 
         assert self.config.batch_size % self.config.mini_batch_size == 0, \
             f"batch_size ({self.config.batch_size}) must be divisible by mini_batch_size ({self.config.mini_batch_size})"
@@ -305,9 +345,15 @@ class PPOTrainer:
         kl_div = PPOTrainer.calculate_kl_divergence(old_log_probs, log_ref_probs)
         # Добавить обрезку value function self.config.clip_range_value
 
-        returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length,
-                                                              max_length=max_length, beta=self.config.kl_coef,
-                                                              gamma=self.config.gamma)
+        # returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length,
+        #                                                       max_length=max_length, beta=self.config.kl_coef,
+        #                                                       gamma=self.config.gamma)
+
+        returns, advantages = PPOTrainer.calculate_generalized_advantages(scores, old_values, kl_div,
+                                                                          query_length=query_length,
+                                                                          beta=self.config.kl_coef,
+                                                                          gamma=self.config.gamma,
+                                                                          lambda_coef=self.config.lambda_coef)
 
         if self.config.normalize_advantage:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -319,7 +365,7 @@ class PPOTrainer:
             'total_loss': []
         }
 
-        for ppo_epoch in range(ppo_epochs):
+        for ppo_epoch in range(self.config.ppo_epochs):
 
             query_split = torch.split(query_tensor, self.config.mini_batch_size)
             responses_split = torch.split(responses, self.config.mini_batch_size)
