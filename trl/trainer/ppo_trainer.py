@@ -272,10 +272,10 @@ class PPOTrainer:
                 next_values = 0.0
                 step_reward = rewards_tensor - beta * kl_div[:, t:t + 1]
             else:
-                next_values = values[:, t + 1]
+                next_values = values[:, query_length - 1 + t + 1]
                 step_reward = -beta * kl_div[:, t:t + 1]
 
-            delta = step_reward + gamma * next_values - values[:, t]
+            delta = step_reward + gamma * next_values - values[:, query_length - 1 + t]
 
             last_gae_lam = delta + gamma * lambda_coef * last_gae_lam
             advantages[:, t] = last_gae_lam.squeeze(-1)
@@ -290,9 +290,11 @@ class PPOTrainer:
 
     @staticmethod
     def calculate_entropy(log_probs: torch.Tensor) -> torch.Tensor:
-        probs = torch.exp(log_probs)
-        entropy = -torch.sum(probs * log_probs, dim=-1)
-        return entropy.mean()
+        # probs = torch.exp(log_probs)
+        # entropy = -torch.sum(probs * log_probs, dim=-1)
+        # return entropy.mean()
+
+        return -log_probs.mean()
 
     @staticmethod
     def get_adaptive_beta(config: Optional[PPOConfig],
@@ -365,9 +367,10 @@ class PPOTrainer:
         #                                                       max_length=max_length, beta=self.config.kl_coef,
         #                                                       gamma=self.config.gamma)
 
+        self.config.kl_coef = PPOTrainer.get_adaptive_beta(self.config, kl_div)
         returns, advantages = PPOTrainer.calculate_generalized_advantages(scores, old_values, kl_div,
                                                                           query_length=query_length,
-                                                                          beta=PPOTrainer.get_adaptive_beta(self.config, kl_div),
+                                                                          beta=self.config.kl_coef,
                                                                           gamma=self.config.gamma,
                                                                           lambda_coef=self.config.lambda_coef)
 
