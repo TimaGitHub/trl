@@ -21,10 +21,12 @@ class PPOConfig:
     mini_batch_size: int = 4
     ppo_epochs: int = 4
     target_kl_coef = 0.05
+    use_adaptive_kl: bool = True
     kl_coef = 0.1
     kl_ctl_update_rate = 0.1
     kl_coef_min = 0.001
     kl_coef_max = 10.0
+    use_gae: bool = True
     gamma: float = 0.95
     vf_coef: float = 0.1
     entropy_coef: float = 0.01
@@ -363,16 +365,19 @@ class PPOTrainer:
         kl_div = PPOTrainer.calculate_kl_divergence(old_log_probs, log_ref_probs)
         # Добавить обрезку value function self.config.clip_range_value
 
-        # returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length,
-        #                                                       max_length=max_length, beta=self.config.kl_coef,
-        #                                                       gamma=self.config.gamma)
+        if self.config.use_adaptive_kl:
+            self.config.kl_coef = PPOTrainer.get_adaptive_beta(self.config, kl_div)
 
-        self.config.kl_coef = PPOTrainer.get_adaptive_beta(self.config, kl_div)
-        returns, advantages = PPOTrainer.calculate_generalized_advantages(scores, old_values, kl_div,
-                                                                          query_length=query_length,
-                                                                          beta=self.config.kl_coef,
-                                                                          gamma=self.config.gamma,
-                                                                          lambda_coef=self.config.lambda_coef)
+        if self.config.use_gae:
+            returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length,
+                                                                  max_length=max_length, beta=self.config.kl_coef,
+                                                                  gamma=self.config.gamma)
+        else:
+            returns, advantages = PPOTrainer.calculate_generalized_advantages(scores, old_values, kl_div,
+                                                                              query_length=query_length,
+                                                                              beta=self.config.kl_coef,
+                                                                              gamma=self.config.gamma,
+                                                                              lambda_coef=self.config.lambda_coef)
 
         if self.config.normalize_advantage:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
