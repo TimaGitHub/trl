@@ -20,7 +20,11 @@ class PPOConfig:
     batch_size: int = 16
     mini_batch_size: int = 4
     ppo_epochs: int = 4
-    kl_coef: float = 0.1
+    target_kl_coef = 0.05
+    kl_coef = 0.1
+    kl_ctl_update_rate = 0.1
+    kl_coef_min = 0.001
+    kl_coef_max = 10.0
     gamma: float = 0.95
     vf_coef: float = 0.1
     entropy_coef: float = 0.01
@@ -290,6 +294,18 @@ class PPOTrainer:
         entropy = -torch.sum(probs * log_probs, dim=-1)
         return entropy.mean()
 
+    @staticmethod
+    def get_adaptive_beta(config: Optional[PPOConfig],
+                          kl_div: torch.Tensor) -> float:
+
+        mean_kl_coef = kl_div.sum(dim=-1).mean().item()
+
+        kl_coef = config.kl_coef * (1.0 + config.kl_ctl_update_rate * ((mean_kl_coef - config.target_kl_coef) / config.target_kl_coef))
+
+        kl_coef = max(config.kl_coef_min, min(kl_coef, config.kl_coef_max))
+
+        return kl_coef
+
     def step(self,
              query_tensor: torch.Tensor | List[torch.Tensor],
              responses: torch.Tensor | List[torch.Tensor],
@@ -351,7 +367,7 @@ class PPOTrainer:
 
         returns, advantages = PPOTrainer.calculate_generalized_advantages(scores, old_values, kl_div,
                                                                           query_length=query_length,
-                                                                          beta=self.config.kl_coef,
+                                                                          beta=PPOTrainer.get_adaptive_beta(self.config, kl_div),
                                                                           gamma=self.config.gamma,
                                                                           lambda_coef=self.config.lambda_coef)
 
