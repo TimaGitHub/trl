@@ -32,7 +32,7 @@ class PPOConfig:
     entropy_coef: float = 0.01
     clip_range_value: float = 0.2
     clip_range: float = 0.2
-    normalize_advantage: bool = False
+    normalize_advantage: bool = True
     max_grad_norm: Optional[float] = 1.0
     lambda_coef: float = 0.95
     use_wandb: bool = False
@@ -288,7 +288,7 @@ class PPOTrainer:
 
     @staticmethod
     def calculate_loss(ratio, clipped_ratio, advantages):
-        return -torch.min(ratio * advantages, clipped_ratio * advantages).sum(dim=-1).mean(dim=0)
+        return -torch.min(ratio * advantages, clipped_ratio * advantages).mean(dim=0)
 
     @staticmethod
     def calculate_entropy(log_probs: torch.Tensor) -> torch.Tensor:
