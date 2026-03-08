@@ -22,10 +22,10 @@ class PPOConfig:
     ppo_epochs: int = 4
     target_kl_coef = 0.05
     use_adaptive_kl: bool = True
-    kl_coef = 0.1
-    kl_ctl_update_rate = 0.1
-    kl_coef_min = 0.001
-    kl_coef_max = 10.0
+    kl_coef: float = 0.1
+    kl_ctl_update_rate: float = 0.1
+    kl_coef_min: float = 0.001
+    kl_coef_max: float = 10.0
     use_gae: bool = True
     gamma: float = 0.95
     vf_coef: float = 0.1
