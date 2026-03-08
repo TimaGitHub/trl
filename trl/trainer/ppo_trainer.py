@@ -298,14 +298,29 @@ class PPOTrainer:
 
         return -log_probs.mean()
 
+    # GEMINI GENERATED
     @staticmethod
     def get_adaptive_beta(config: Optional[PPOConfig],
                           kl_div: torch.Tensor) -> float:
+        # 1. Защита от NaN/Inf во входных данных
+        if torch.isnan(kl_div).any() or torch.isinf(kl_div).any():
+            return config.kl_coef  # Возвращаем текущий коэффициент без изменений
 
+        # 2. Считаем среднее KL
         mean_kl_coef = kl_div.sum(dim=-1).mean().item()
 
-        kl_coef = config.kl_coef * (1.0 + config.kl_ctl_update_rate * ((mean_kl_coef - config.target_kl_coef) / config.target_kl_coef))
+        # 3. Добавляем epsilon для защиты от деления на ноль
+        eps = 1e-8
+        target = config.target_kl_coef if config.target_kl_coef > 0 else eps
 
+        # 4. Считаем изменение (с ограничением шага изменения)
+        # Используем clamp, чтобы коэффициент не прыгал слишком резко за один шаг
+        diff_ratio = (mean_kl_coef - target) / target
+        diff_ratio = max(-0.2, min(diff_ratio, 0.2))  # Ограничиваем изменение на 20% за раз
+
+        kl_coef = config.kl_coef * (1.0 + config.kl_ctl_update_rate * diff_ratio)
+
+        # 5. Жесткие границы из конфига
         kl_coef = max(config.kl_coef_min, min(kl_coef, config.kl_coef_max))
 
         return kl_coef
@@ -413,6 +428,7 @@ class PPOTrainer:
                 clipped_ratio = PPOTrainer.clip_ratio(ratio, eps=self.config.clip_range)
                 clipped_surrogate_objective_function = PPOTrainer.calculate_loss(ratio, clipped_ratio, adv_mini)
                 value_loss = mse_loss(values[:, query_length - 1: -1, :].squeeze(-1), ret_mini)
+
                 entropy = PPOTrainer.calculate_entropy(log_probs)
 
                 total_loss = clipped_surrogate_objective_function \
