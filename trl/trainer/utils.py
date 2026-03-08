@@ -45,12 +45,12 @@ def filter_logits(logits: torch.Tensor, top_k: int = 0, top_p: float = 1.0):
 # GEMINI GENERATED
 def collate_batch(batch: List[torch.Tensor], pad_token_id: int, device: torch.device='cpu'):
     # Паддинг: превращаем список в тензор [batch_size, max_len]
-    input_ids = pad_sequence(batch, batch_first=True, padding_value=pad_token_id, device=device)
+    padded_tensor = pad_sequence(batch, batch_first=True, padding_value=pad_token_id, device=device)
 
     # Маска: 1 там, где есть данные, и 0 там, где pad_token_id
-    attention_mask = (input_ids != pad_token_id).long()
+    attention_mask = (padded_tensor != pad_token_id).long()
 
-    return input_ids, attention_mask
+    return padded_tensor, attention_mask
 
 
 # GEMINI GENERATED
@@ -59,13 +59,13 @@ def collate_left_padding(batch: List[torch.Tensor], pad_token_id: int, device: t
     batch_size = len(batch)
 
     # 1. Создаем тензор, сразу заполненный pad_token_id
-    input_ids = torch.full((batch_size, max_len), pad_token_id, dtype=torch.long, device=device)
+    padded_tensor = torch.full((batch_size, max_len), pad_token_id, dtype=torch.long, device=device)
 
     # 2. Заполняем "хвосты" строк нашими данными
     for i, seq in enumerate(batch):
-        input_ids[i, -len(seq):] = seq
+        padded_tensor[i, -len(seq):] = seq
 
     # 3. Маска создается так же
-    attention_mask = (input_ids != pad_token_id).long()
+    attention_mask = (padded_tensor != pad_token_id).long()
 
     return input_ids, attention_mask
