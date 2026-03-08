@@ -368,7 +368,7 @@ class PPOTrainer:
         if self.config.use_adaptive_kl:
             self.config.kl_coef = PPOTrainer.get_adaptive_beta(self.config, kl_div)
 
-        if self.config.use_gae:
+        if not self.config.use_gae:
             returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length,
                                                                   max_length=max_length, beta=self.config.kl_coef,
                                                                   gamma=self.config.gamma)
