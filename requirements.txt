@@ -1,2 +1,6 @@
-transformers
-torch
+transformers~=5.2.0
+torch~=2.6.0
+pytest~=9.0.2
+trl~=0.11.0
+wandb~=0.25.0
+tqdm~=4.67.1
