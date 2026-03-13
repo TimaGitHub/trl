@@ -81,6 +81,97 @@
 [//]: # ()
 [//]: # (Create, experiment, and inspire!)
 
+[//]: # (# TRL - Transformer Reinforcement Learning)
+
+[//]: # ()
+[//]: # (![Image]&#40;https://github.com/user-attachments/assets/3812473c-7c5b-4f59-b849-b9b77592d3c4&#41;)
+
+[//]: # ()
+[//]: # ()
+[//]: # (# 🧠 Custom LLM Alignment & Optimization )
+
+[//]: # ()
+[//]: # ([![Open In Colab]&#40;https://colab.research.google.com/assets/colab-badge.svg&#41;]&#40;https://colab.research.google.com/drive/1VvLGbyk4pvS1M1lIumQ3Awr-OjPfUUmj?usp=sharing&#41;)
+
+[//]: # ()
+[//]: # (Welcome to my educational repository dedicated to the inner workings of Large Language Model &#40;LLM&#41; alignment and fine-tuning. )
+
+[//]: # ()
+[//]: # (This project is built from scratch to step away from popular "black-box" libraries &#40;like Hugging Face `trl` or `peft`&#41; and gain a deep, fundamental understanding of the mathematics, tensor operations, and memory handling required to train modern AI. )
+
+[//]: # ()
+[//]: # (It is designed as an open laboratory for implementing, testing, and debugging state-of-the-art algorithms in PyTorch.)
+
+[//]: # ()
+[//]: # (## 🚀 Roadmap & Features)
+
+[//]: # ()
+[//]: # (This repository is actively growing. Here is the current implementation status of the core algorithms:)
+
+[//]: # ()
+[//]: # (* **✅ PPO &#40;Proximal Policy Optimization&#41;**)
+
+[//]: # (  * Fully custom `PPOTrainer` pipeline.)
+
+[//]: # (  * Generalized Advantage Estimation &#40;GAE&#41; and Monte Carlo returns.)
+
+[//]: # (  * Adaptive KL-divergence penalty controllers to prevent reward hacking.)
+
+[//]: # (  * Clipped surrogate objective and Value Function clipping.)
+
+[//]: # (* **✅ DPO &#40;Direct Preference Optimization&#41;**)
+
+[//]: # (  * Custom `DPOTrainer` implementing the exact paper formulation.)
+
+[//]: # (  * Precise token-level math using Shift & Gather techniques for auto-regressive models.)
+
+[//]: # (  * Proper loss masking &#40;ignoring prompt and padding tokens in the loss calculation&#41;.)
+
+[//]: # (* **🚧 GRPO &#40;Group Relative Policy Optimization&#41;** — *[Work in Progress]*)
+
+[//]: # (* **🚧 LoRA &#40;Low-Rank Adaptation&#41;** — *[Planned: Implementing custom forward passes with low-rank matrices]*)
+
+[//]: # (* **🚧 Custom KV-Cache** — *[Planned: Deep dive into inference optimization]*)
+
+[//]: # ()
+[//]: # (## 🔬 Why this project?)
+
+[//]: # ()
+[//]: # (When using standard wrappers, complex operations like padding handling, log-probability extraction, and advantage calculation are hidden behind simple APIs. This project brings those complexities to the surface:)
+
+[//]: # (- **Transparent Math:** Every equation from the original papers &#40;like DPO's implicit reward or PPO's surrogate loss&#41; is visibly translated into PyTorch tensor operations.)
+
+[//]: # (- **Full Control:** Absolute freedom over data collation, masking strategies, and sampling mechanisms &#40;Top-K, Nucleus&#41;.)
+
+[//]: # ()
+[//]: # (## 📊 Weights & Biases Integration)
+
+[//]: # ()
+[//]: # (Reinforcement learning is notoriously difficult to debug. This repository natively integrates with W&B &#40;`use_wandb=True`&#41; to make the training process fully observable:)
+
+[//]: # (- Track core metrics: KL divergence, Value Loss, Entropy, and Implicit Rewards &#40;Margin & Accuracy for DPO&#41;.)
+
+[//]: # (- **Interactive Game Logs:** Custom tables log the `query`, `response`, and `reward` for every epoch, allowing you to qualitatively evaluate the model's behavior as it learns.)
+
+[//]: # ()
+[//]: # (## 💻 Quick Start)
+
+[//]: # ()
+[//]: # (You can explore the training process directly in your browser using the provided Google Colab notebook. It sets up the environment and launches a full RLHF/DPO cycle.)
+
+[//]: # ()
+[//]: # (> *Click the Colab badge at the top of this file to make a copy to your Google Drive and start experimenting.*)
+
+[//]: # ()
+[//]: # (### Installation)
+
+[//]: # ()
+[//]: # (To run this locally or in your own environment:)
+
+[//]: # ()
+[//]: # (```bash)
+
+[//]: # (pip install "git+[https://github.com/TimaGitHub/trl.git]&#40;https://github.com/TimaGitHub/trl.git&#41;")
 # TRL - Transformer Reinforcement Learning
 
 ![Image](https://github.com/user-attachments/assets/3812473c-7c5b-4f59-b849-b9b77592d3c4)
@@ -109,9 +200,11 @@ This repository is actively growing. Here is the current implementation status o
   * Custom `DPOTrainer` implementing the exact paper formulation.
   * Precise token-level math using Shift & Gather techniques for auto-regressive models.
   * Proper loss masking (ignoring prompt and padding tokens in the loss calculation).
-* **🚧 GRPO (Group Relative Policy Optimization)** — *[Work in Progress]*
+* **✅ GRPO (Group Relative Policy Optimization)**
+  * Custom `GRPOTrainer` for efficient alignment without a separate value model.
+  * Group-based advantage estimation using Z-score normalization.
+  * Memory-efficient generation and optimization.
 * **🚧 LoRA (Low-Rank Adaptation)** — *[Planned: Implementing custom forward passes with low-rank matrices]*
-* **🚧 Custom KV-Cache** — *[Planned: Deep dive into inference optimization]*
 
 ## 🔬 Why this project?
 
