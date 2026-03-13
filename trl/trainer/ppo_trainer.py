@@ -401,6 +401,7 @@ class PPOTrainer:
         if self.config.use_adaptive_kl:
             self.config.kl_coef = PPOTrainer.get_adaptive_beta(self.config, kl_div)
 
+        # lambda_coef == 1  in GAE makes the advantage estimation equivalent to the Monte Carlo (MC) return
         if not self.config.use_gae:
             self.config.gamma = 1.0
 
@@ -409,7 +410,6 @@ class PPOTrainer:
                                                                               beta=self.config.kl_coef,
                                                                               gamma=self.config.gamma,
                                                                               lambda_coef=self.config.lambda_coef)
-            # CHECK IF IT WORKS (lambda_coef == 1  in GAE makes the advantage estimation equivalent to the Monte Carlo (MC) return)
 
 
         if self.config.normalize_advantage:
