@@ -6,6 +6,7 @@ from transformers import AutoModelForCausalLM
 from dataclasses import dataclass, field
 from typing import Optional, Callable, List, Dict, Any, Tuple
 import numpy as np
+import inspect
 
 from transformers import AutoTokenizer
 
@@ -102,7 +103,12 @@ class GRPOTrainer:
         else:
             self.data_loader = None
 
-        self.vec_score = np.vectorize(reward_funcs)
+        if reward_funcs is None:
+            self.reward_funcs = []
+        elif not isinstance(reward_funcs, list):
+            self.reward_funcs = [reward_funcs]
+        else:
+            self.reward_funcs = reward_funcs
 
         if self.config.use_wandb:
             wandb.init(
@@ -168,8 +174,49 @@ class GRPOTrainer:
             prompts[..., -self.config.max_completion_length:].cpu(),
             self.tokenizer
         )
-        vectorized_scores = self.vec_score(token_to_string)
-        tensor_scores = torch.as_tensor(vectorized_scores, dtype=torch.float32, device=self.device).view(B, G)
+        # GEMINI GENERATED
+        # === 2. Подсчет наград (Rewards) ===
+        completions_text = GRPOTrainer.process_tokens_to_string(
+            prompts[..., -self.config.max_completion_length:].cpu(),
+            self.tokenizer
+        )
+
+        # === 2. Подсчет наград (Rewards) ===
+        # Размножаем промпты G раз для соответствия размерности
+        prompts_text = [q for q in batch['question'] for _ in range(G)]
+
+        # Размножаем любые другие данные из батча (например, ground_truth или answers)
+        reward_kwargs = {key: [] for key in batch.keys() if key != 'question'}
+        for key, value in batch.items():
+            if key != 'question':
+                for v in value:
+                    reward_kwargs[key].extend([v] * G)
+
+        reward_kwargs["prompts"] = prompts_text
+        reward_kwargs["completions"] = completions_text
+
+        # Итоговый тензор для наград
+        rewards = torch.zeros(B * G, dtype=torch.float32, device=self.device)
+
+        # Проходим по всем функциям вознаграждения
+        for reward_func in self.reward_funcs:
+            sig = inspect.signature(reward_func)
+            # Проверяем, принимает ли функция **kwargs
+            accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values())
+
+            # Фильтруем аргументы
+            func_kwargs = reward_kwargs.copy()
+            if not accepts_kwargs:
+                valid_keys = set(sig.parameters.keys())
+                func_kwargs = {k: v for k, v in func_kwargs.items() if k in valid_keys}
+
+            # Вычисляем награду для текущей функции и плюсуем к общей
+            step_rewards = reward_func(**func_kwargs)
+            step_rewards = torch.as_tensor(step_rewards, dtype=torch.float32, device=self.device)
+            rewards += step_rewards
+
+        tensor_scores = rewards.view(B, G)
+        # ================
 
         mean = tensor_scores.mean(dim=-1, keepdim=True)
         std = tensor_scores.std(dim=-1, keepdim=True, unbiased=False)
@@ -255,13 +302,13 @@ class GRPOTrainer:
             }
 
             table = wandb.Table(columns=["query", "response", "reward"])
-            for b_idx in range(B):
-                q_text = batch['question'][b_idx]
-                for g_idx in range(G):
-                    flat_idx = b_idx * G + g_idx
-                    r_text = token_to_string[flat_idx]
-                    score_val = vectorized_scores[flat_idx]
-                    table.add_data(q_text, r_text, score_val)
+
+            # rewards - это тензор размера (B * G), переводим его в список для таблицы
+            # prompts_text и completions_text уже имеют нужный размер (B * G)
+            scores_list = rewards.tolist()
+
+            for q_text, r_text, score_val in zip(prompts_text, completions_text, scores_list):
+                table.add_data(q_text, r_text, score_val)
 
             wandb_stats["game_log"] = table
             wandb.log(wandb_stats)
