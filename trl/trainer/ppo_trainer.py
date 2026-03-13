@@ -402,20 +402,14 @@ class PPOTrainer:
             self.config.kl_coef = PPOTrainer.get_adaptive_beta(self.config, kl_div)
 
         if not self.config.use_gae:
-            returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length,
-                                                                  max_length=max_length, beta=self.config.kl_coef,
-                                                                  gamma=self.config.gamma)
-        else:
-            returns, advantages = PPOTrainer.calculate_generalized_advantages(scores, old_values, kl_div,
+            self.config.gamma = 1.0
+
+        returns, advantages = PPOTrainer.calculate_generalized_advantages(scores, old_values, kl_div,
                                                                               query_length=query_length,
                                                                               beta=self.config.kl_coef,
                                                                               gamma=self.config.gamma,
                                                                               lambda_coef=self.config.lambda_coef)
-
             # CHECK IF IT WORKS (lambda_coef == 1  in GAE makes the advantage estimation equivalent to the Monte Carlo (MC) return)
-            # returns, advantages = PPOTrainer.calculate_advantages(scores, old_values, kl_div, query_length=query_length,
-            #                                                       max_length=max_length, beta=1,
-            #                                                       gamma=self.config.gamma)
 
 
         if self.config.normalize_advantage:
