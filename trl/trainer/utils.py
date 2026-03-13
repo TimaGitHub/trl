@@ -68,4 +68,4 @@ def collate_left_padding(batch: List[torch.Tensor], pad_token_id: int, device: t
     # 3. Маска создается так же
     attention_mask = (padded_tensor != pad_token_id).long()
 
-    return input_ids, attention_mask
+    return padded_tensor, attention_mask
